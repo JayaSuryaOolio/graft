@@ -125,6 +125,12 @@ _spotlight_stop_root() {
 
 cmd_start() {
   local resolved worktree root
+  local stash_root_changes=0
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" == "--stash-root-changes" ]] && stash_root_changes=1
+  done
+
   resolved=$(_spotlight_resolve) || {
     echo "spotlight: not inside a git repository" >&2
     return 1
@@ -157,11 +163,23 @@ cmd_start() {
 
   if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
     echo "spotlight: $root has uncommitted changes." >&2
-    local reply
-    read -r "reply?Stash them and start spotlight? [y/N] "
-    if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-      echo "spotlight: aborted — commit or stash the changes in $root first" >&2
-      return 1
+    if (( ! stash_root_changes )); then
+      if [[ ! -t 0 ]]; then
+        # No controlling terminal to prompt on (e.g. invoked by a non-
+        # interactive caller like worktree-studio) — refuse rather than
+        # block forever on a read() that will never get input, or worse,
+        # silently treat EOF-on-stdin as an implicit "no". Callers that
+        # want the old prompt's "yes" behavior non-interactively should
+        # pass --stash-root-changes explicitly.
+        echo "spotlight: refusing to prompt without a terminal — re-run with --stash-root-changes to stash and start non-interactively, or commit/stash the changes in $root yourself first" >&2
+        return 1
+      fi
+      local reply
+      read -r "reply?Stash them and start spotlight? [y/N] "
+      if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+        echo "spotlight: aborted — commit or stash the changes in $root first" >&2
+        return 1
+      fi
     fi
     if ! git -C "$root" stash push --include-untracked --message "spotlight-stash-for-$worktree" >&2; then
       echo "spotlight: failed to stash changes in $root" >&2
