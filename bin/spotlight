@@ -95,6 +95,7 @@ _spotlight_stop_root() {
     return 1
   fi
   local pid="${entry##*|}"
+  local worktree="${entry%%|*}"
 
   # Kill the watcher's children first (fswatch/rsync), then the watcher itself.
   pkill -TERM -P "$pid" 2>/dev/null
@@ -105,6 +106,17 @@ _spotlight_stop_root() {
 
   git -C "$root" checkout -- . 2>/dev/null
   git -C "$root" clean -fd >/dev/null 2>&1
+
+  local stash_marker="spotlight-stash-for-$worktree"
+  local stash_ref
+  stash_ref=$(git -C "$root" stash list --format='%gd %s' | awk -v m="$stash_marker" 'index($0, m) { print $1; exit }')
+  if [[ -n "$stash_ref" ]]; then
+    if git -C "$root" stash pop "$stash_ref"; then
+      echo "spotlight: restored stashed changes in $root"
+    else
+      echo "spotlight: failed to restore stash '$stash_marker' in $root — resolve manually (git stash list)" >&2
+    fi
+  fi
 
   unset "SPOTLIGHT_MAP[$root]"
   _spotlight_save_map
@@ -144,8 +156,18 @@ cmd_start() {
   fi
 
   if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
-    echo "spotlight: refusing to start — $root has uncommitted changes; commit or stash them first" >&2
-    return 1
+    echo "spotlight: $root has uncommitted changes." >&2
+    local reply
+    read -r "reply?Stash them and start spotlight? [y/N] "
+    if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+      echo "spotlight: aborted — commit or stash the changes in $root first" >&2
+      return 1
+    fi
+    if ! git -C "$root" stash push --include-untracked --message "spotlight-stash-for-$worktree" >&2; then
+      echo "spotlight: failed to stash changes in $root" >&2
+      return 1
+    fi
+    echo "spotlight: stashed uncommitted changes in $root" >&2
   fi
 
   mkdir -p "$LOG_DIR"
