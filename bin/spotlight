@@ -68,6 +68,24 @@ _spotlight_sync() {
   rsync -a --delete --exclude='.git' --filter=':- .gitignore' "$worktree/" "$root/"
 }
 
+_spotlight_require() {
+  local missing=0
+  local name
+  for name in "$@"; do
+    if ! command -v "$name" >/dev/null 2>&1; then
+      echo "spotlight: '$name' is required but not installed." >&2
+      echo "  Re-run this repo's install.sh, or install it manually:" >&2
+      echo "    macOS:          brew install $name" >&2
+      echo "    Debian/Ubuntu:  sudo apt-get install $name" >&2
+      echo "    Fedora/RHEL:    sudo dnf install $name" >&2
+      echo "    Arch:           sudo pacman -S $name" >&2
+      missing=1
+    fi
+  done
+  (( missing )) && return 1
+  return 0
+}
+
 _spotlight_stop_root() {
   local root="$1"
   _spotlight_load_map
@@ -107,15 +125,7 @@ cmd_start() {
     return 1
   fi
 
-  if ! command -v fswatch >/dev/null 2>&1; then
-    echo "spotlight: fswatch is required but not installed." >&2
-    echo "Re-run this repo's install.sh, or install it manually:" >&2
-    echo "  macOS:          brew install fswatch" >&2
-    echo "  Debian/Ubuntu:  sudo apt-get install fswatch" >&2
-    echo "  Fedora/RHEL:    sudo dnf install fswatch" >&2
-    echo "  Arch:           sudo pacman -S fswatch" >&2
-    return 1
-  fi
+  _spotlight_require fswatch rsync || return 1
 
   _spotlight_load_map
   _spotlight_prune_dead
