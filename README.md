@@ -37,8 +37,8 @@ spotlight stop [root]    # stop mirroring (defaults to the current repo)
 ```
 
 Only one worktree can mirror into a given repo root at a time — starting
-a new one for the same root automatically stops the previous instance.
-Different repos can each have their own independent mirror running.
+a second one for the same root fails with an error; run `spotlight stop`
+first. Different repos can each have their own independent mirror running.
 
 ## Requirements
 
