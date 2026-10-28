@@ -156,9 +156,9 @@ cmd_start() {
       echo "$root"
       return 0
     fi
-    echo "spotlight: stopping existing instance from $existing_worktree" >&2
-    _spotlight_stop_root "$root"
-    _spotlight_load_map
+    echo "spotlight: already running for $root from $existing_worktree" >&2
+    echo "  Run 'spotlight stop $root' first, then start again from here." >&2
+    return 1
   fi
 
   if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
