@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Installs the `spotlight` command and its zshrc hook, and checks/installs
+# Installs the `graft` command and its zshrc hook, and checks/installs
 # its dependencies (fswatch, rsync) on macOS and Linux.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="${SPOTLIGHT_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${GRAFT_INSTALL_DIR:-$HOME/.local/bin}"
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 OS="$(uname -s)"
 
@@ -12,12 +12,12 @@ install_dep() {
   local name="$1"
   command -v "$name" >/dev/null 2>&1 && return 0
 
-  echo "spotlight: '$name' is required but not installed."
+  echo "graft: '$name' is required but not installed."
   read -r -p "Install $name now? [y/N] " reply
   case "$reply" in
     [yY]*) ;;
     *)
-      echo "Skipping $name — 'spotlight start' will fail without it. Install it manually later."
+      echo "Skipping $name — 'graft start' will fail without it. Install it manually later."
       return 1
       ;;
   esac
@@ -50,27 +50,27 @@ install_dep() {
 }
 
 mkdir -p "$INSTALL_DIR"
-install -m 755 "$REPO_DIR/bin/spotlight" "$INSTALL_DIR/spotlight"
-echo "Installed spotlight to $INSTALL_DIR/spotlight"
+install -m 755 "$REPO_DIR/bin/graft" "$INSTALL_DIR/graft"
+echo "Installed graft to $INSTALL_DIR/graft"
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
-  *) echo "Warning: $INSTALL_DIR is not on your PATH. Add it in your shell profile to run 'spotlight' directly." ;;
+  *) echo "Warning: $INSTALL_DIR is not on your PATH. Add it in your shell profile to run 'graft' directly." ;;
 esac
 
 install_dep fswatch || true
 install_dep rsync || true
 
-MARKER="# >>> spotlight >>>"
+MARKER="# >>> graft >>>"
 if [[ -f "$ZSHRC" ]] && grep -qF "$MARKER" "$ZSHRC"; then
-  echo "spotlight hook already present in $ZSHRC, skipping"
+  echo "graft hook already present in $ZSHRC, skipping"
 else
   { echo ""; cat "$REPO_DIR/zshrc-hook.sh"; } >> "$ZSHRC"
-  echo "Added spotlight chpwd hook to $ZSHRC"
+  echo "Added graft chpwd hook to $ZSHRC"
 fi
 
 echo
 echo "Done. Run 'source $ZSHRC' (or open a new terminal), then:"
-echo "  spotlight start        # from inside a worktree"
-echo "  spotlight list"
-echo "  spotlight stop [root]"
+echo "  graft start        # from inside a worktree"
+echo "  graft list"
+echo "  graft stop [root]"
