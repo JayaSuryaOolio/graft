@@ -1,58 +1,58 @@
 #!/usr/bin/env zsh
 #
-# spotlight — mirror a git worktree into its repo's root checkout in the
+# graft — mirror a git worktree into its repo's root checkout in the
 # background, so path-bound tools (Spotlight, Finder, anything hardcoded to
 # a fixed directory) always see whichever worktree is "in focus".
 #
 # Usage:
-#   spotlight start            Mirror the current worktree into its root repo
-#   spotlight stop [root]      Stop mirroring (defaults to the current repo)
-#   spotlight list             List all running spotlight instances
+#   graft start            Mirror the current worktree into its root repo
+#   graft stop [root]      Stop mirroring (defaults to the current repo)
+#   graft list             List all running graft instances
 
 emulate -L zsh
 setopt pipefail
 
-STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/spotlight"
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/graft"
 STATE_FILE="$STATE_DIR/state.map"
 LOG_DIR="$STATE_DIR/logs"
 
-typeset -gA SPOTLIGHT_MAP
+typeset -gA GRAFT_MAP
 
-_spotlight_load_map() {
-  SPOTLIGHT_MAP=()
+_graft_load_map() {
+  GRAFT_MAP=()
   [[ -f "$STATE_FILE" ]] || return 0
   local root worktree pid
   while IFS=$'\t' read -r root worktree pid; do
     [[ -z "$root" ]] && continue
-    SPOTLIGHT_MAP[$root]="$worktree|$pid"
+    GRAFT_MAP[$root]="$worktree|$pid"
   done < "$STATE_FILE"
 }
 
-_spotlight_save_map() {
+_graft_save_map() {
   mkdir -p "$STATE_DIR"
   : > "$STATE_FILE"
   local root entry worktree pid
-  for root entry in "${(@kv)SPOTLIGHT_MAP}"; do
+  for root entry in "${(@kv)GRAFT_MAP}"; do
     worktree="${entry%%|*}"
     pid="${entry##*|}"
     printf '%s\t%s\t%s\n' "$root" "$worktree" "$pid" >> "$STATE_FILE"
   done
 }
 
-_spotlight_prune_dead() {
+_graft_prune_dead() {
   local changed=0
   local root entry pid
-  for root entry in "${(@kv)SPOTLIGHT_MAP}"; do
+  for root entry in "${(@kv)GRAFT_MAP}"; do
     pid="${entry##*|}"
     if ! kill -0 "$pid" 2>/dev/null; then
-      unset "SPOTLIGHT_MAP[$root]"
+      unset "GRAFT_MAP[$root]"
       changed=1
     fi
   done
-  (( changed )) && _spotlight_save_map
+  (( changed )) && _graft_save_map
 }
 
-_spotlight_resolve() {
+_graft_resolve() {
   # Prints "$worktree\t$root" for the repo containing $PWD (or $1).
   local dir="${1:-$PWD}"
   local worktree common_dir root
@@ -63,17 +63,17 @@ _spotlight_resolve() {
   printf '%s\t%s\n' "$worktree" "$root"
 }
 
-_spotlight_sync() {
+_graft_sync() {
   local worktree="$1" root="$2"
   rsync -a --delete --exclude='.git' --filter=':- .gitignore' "$worktree/" "$root/"
 }
 
-_spotlight_require() {
+_graft_require() {
   local missing=0
   local name
   for name in "$@"; do
     if ! command -v "$name" >/dev/null 2>&1; then
-      echo "spotlight: '$name' is required but not installed." >&2
+      echo "graft: '$name' is required but not installed." >&2
       echo "  Re-run this repo's install.sh, or install it manually:" >&2
       echo "    macOS:          brew install $name" >&2
       echo "    Debian/Ubuntu:  sudo apt-get install $name" >&2
@@ -86,12 +86,12 @@ _spotlight_require() {
   return 0
 }
 
-_spotlight_stop_root() {
+_graft_stop_root() {
   local root="$1"
-  _spotlight_load_map
-  local entry="${SPOTLIGHT_MAP[$root]:-}"
+  _graft_load_map
+  local entry="${GRAFT_MAP[$root]:-}"
   if [[ -z "$entry" ]]; then
-    echo "spotlight: nothing running for $root" >&2
+    echo "graft: nothing running for $root" >&2
     return 1
   fi
   local pid="${entry##*|}"
@@ -107,20 +107,20 @@ _spotlight_stop_root() {
   git -C "$root" checkout -- . 2>/dev/null
   git -C "$root" clean -fd >/dev/null 2>&1
 
-  local stash_marker="spotlight-stash-for-$worktree"
+  local stash_marker="graft-stash-for-$worktree"
   local stash_ref
   stash_ref=$(git -C "$root" stash list --format='%gd %s' | awk -v m="$stash_marker" 'index($0, m) { print $1; exit }')
   if [[ -n "$stash_ref" ]]; then
     if git -C "$root" stash pop "$stash_ref"; then
-      echo "spotlight: restored stashed changes in $root"
+      echo "graft: restored stashed changes in $root"
     else
-      echo "spotlight: failed to restore stash '$stash_marker' in $root — resolve manually (git stash list)" >&2
+      echo "graft: failed to restore stash '$stash_marker' in $root — resolve manually (git stash list)" >&2
     fi
   fi
 
-  unset "SPOTLIGHT_MAP[$root]"
-  _spotlight_save_map
-  echo "spotlight stopped for $root"
+  unset "GRAFT_MAP[$root]"
+  _graft_save_map
+  echo "graft stopped for $root"
 }
 
 cmd_start() {
@@ -131,38 +131,38 @@ cmd_start() {
     [[ "$arg" == "--stash-root-changes" ]] && stash_root_changes=1
   done
 
-  resolved=$(_spotlight_resolve) || {
-    echo "spotlight: not inside a git repository" >&2
+  resolved=$(_graft_resolve) || {
+    echo "graft: not inside a git repository" >&2
     return 1
   }
   worktree="${resolved%%$'\t'*}"
   root="${resolved##*$'\t'}"
 
   if [[ "$worktree" == "$root" ]]; then
-    echo "spotlight: already inside the root repo ($root) — nothing to mirror" >&2
+    echo "graft: already inside the root repo ($root) — nothing to mirror" >&2
     return 1
   fi
 
-  _spotlight_require fswatch rsync || return 1
+  _graft_require fswatch rsync || return 1
 
-  _spotlight_load_map
-  _spotlight_prune_dead
+  _graft_load_map
+  _graft_prune_dead
 
-  local existing="${SPOTLIGHT_MAP[$root]:-}"
+  local existing="${GRAFT_MAP[$root]:-}"
   if [[ -n "$existing" ]]; then
     local existing_worktree="${existing%%|*}"
     if [[ "$existing_worktree" == "$worktree" ]]; then
-      echo "spotlight: already running for $worktree"
+      echo "graft: already running for $worktree"
       echo "$root"
       return 0
     fi
-    echo "spotlight: already running for $root from $existing_worktree" >&2
-    echo "  Run 'spotlight stop $root' first, then start again from here." >&2
+    echo "graft: already running for $root from $existing_worktree" >&2
+    echo "  Run 'graft stop $root' first, then start again from here." >&2
     return 1
   fi
 
   if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
-    echo "spotlight: $root has uncommitted changes." >&2
+    echo "graft: $root has uncommitted changes." >&2
     if (( ! stash_root_changes )); then
       if [[ ! -t 0 ]]; then
         # No controlling terminal to prompt on (e.g. invoked by a non-
@@ -171,27 +171,27 @@ cmd_start() {
         # silently treat EOF-on-stdin as an implicit "no". Callers that
         # want the old prompt's "yes" behavior non-interactively should
         # pass --stash-root-changes explicitly.
-        echo "spotlight: refusing to prompt without a terminal — re-run with --stash-root-changes to stash and start non-interactively, or commit/stash the changes in $root yourself first" >&2
+        echo "graft: refusing to prompt without a terminal — re-run with --stash-root-changes to stash and start non-interactively, or commit/stash the changes in $root yourself first" >&2
         return 1
       fi
       local reply
-      read -r "reply?Stash them and start spotlight? [y/N] "
+      read -r "reply?Stash them and start graft? [y/N] "
       if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-        echo "spotlight: aborted — commit or stash the changes in $root first" >&2
+        echo "graft: aborted — commit or stash the changes in $root first" >&2
         return 1
       fi
     fi
-    if ! git -C "$root" stash push --include-untracked --message "spotlight-stash-for-$worktree" >&2; then
-      echo "spotlight: failed to stash changes in $root" >&2
+    if ! git -C "$root" stash push --include-untracked --message "graft-stash-for-$worktree" >&2; then
+      echo "graft: failed to stash changes in $root" >&2
       return 1
     fi
-    echo "spotlight: stashed uncommitted changes in $root" >&2
+    echo "graft: stashed uncommitted changes in $root" >&2
   fi
 
   mkdir -p "$LOG_DIR"
   local logfile="$LOG_DIR/$(basename "$root").log"
 
-  _spotlight_sync "$worktree" "$root"
+  _graft_sync "$worktree" "$root"
 
   (
     fswatch -o -l 0.5 "$worktree" 2>>"$logfile" | while read -r _; do
@@ -201,10 +201,10 @@ cmd_start() {
   disown
   local pid=$!
 
-  SPOTLIGHT_MAP[$root]="$worktree|$pid"
-  _spotlight_save_map
+  GRAFT_MAP[$root]="$worktree|$pid"
+  _graft_save_map
 
-  echo "spotlight running from the worktree $worktree"
+  echo "graft running from the worktree $worktree"
   echo "$root"
 }
 
@@ -212,29 +212,29 @@ cmd_stop() {
   local root="$1"
   if [[ -z "$root" ]]; then
     local resolved
-    resolved=$(_spotlight_resolve) || {
-      echo "spotlight: not inside a git repository; pass a root path or run 'spotlight list'" >&2
+    resolved=$(_graft_resolve) || {
+      echo "graft: not inside a git repository; pass a root path or run 'graft list'" >&2
       return 1
     }
     root="${resolved##*$'\t'}"
   else
     root=$(cd "$root" 2>/dev/null && pwd) || {
-      echo "spotlight: no such directory: $1" >&2
+      echo "graft: no such directory: $1" >&2
       return 1
     }
   fi
-  _spotlight_stop_root "$root"
+  _graft_stop_root "$root"
 }
 
 cmd_list() {
-  _spotlight_load_map
-  _spotlight_prune_dead
-  if (( ${#SPOTLIGHT_MAP} == 0 )); then
-    echo "no spotlight instances running"
+  _graft_load_map
+  _graft_prune_dead
+  if (( ${#GRAFT_MAP} == 0 )); then
+    echo "no graft instances running"
     return 0
   fi
   local root entry worktree pid
-  for root entry in "${(@kv)SPOTLIGHT_MAP}"; do
+  for root entry in "${(@kv)GRAFT_MAP}"; do
     worktree="${entry%%|*}"
     pid="${entry##*|}"
     printf '%s  <-  %s  (pid %s)\n' "$root" "$worktree" "$pid"
@@ -243,12 +243,12 @@ cmd_list() {
 
 cmd_help() {
   cat <<'EOF'
-spotlight — mirror a git worktree into its repo's root checkout
+graft — mirror a git worktree into its repo's root checkout
 
 Usage:
-  spotlight start            Mirror the current worktree into its root repo
-  spotlight stop [root]      Stop mirroring (defaults to the current repo)
-  spotlight list             List all running spotlight instances
+  graft start            Mirror the current worktree into its root repo
+  graft stop [root]      Stop mirroring (defaults to the current repo)
+  graft list             List all running graft instances
 EOF
 }
 
@@ -257,5 +257,5 @@ case "${1:-}" in
   stop)  shift; cmd_stop "$@" ;;
   list)  shift; cmd_list "$@" ;;
   help|-h|--help|"") cmd_help ;;
-  *) echo "spotlight: unknown command '$1'" >&2; cmd_help; exit 1 ;;
+  *) echo "graft: unknown command '$1'" >&2; cmd_help; exit 1 ;;
 esac
