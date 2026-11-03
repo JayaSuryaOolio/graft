@@ -246,7 +246,11 @@ cmd_help() {
 graft — mirror a git worktree into its repo's root checkout
 
 Usage:
-  graft start            Mirror the current worktree into its root repo
+  graft start [--stash-root-changes]
+                             Mirror the current worktree into its root repo
+                             --stash-root-changes: stash uncommitted root changes
+                             without prompting (needed when not on a terminal);
+                             'stop' restores them
   graft stop [root]      Stop mirroring (defaults to the current repo)
   graft list             List all running graft instances
 EOF

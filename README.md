@@ -32,9 +32,14 @@ Restart your shell (or `source ~/.zshrc`) after installing.
 
 ```sh
 graft start          # from inside a worktree — mirrors it into the repo root
+graft start --stash-root-changes   # stash a dirty root without prompting (scripts, agents)
 graft list           # show every repo with an active mirror
 graft stop [root]    # stop mirroring (defaults to the current repo)
 ```
+
+If the root checkout has uncommitted changes, `start` asks to stash them;
+without a terminal it refuses unless you pass `--stash-root-changes`.
+`stop` pops that stash back.
 
 Only one worktree can mirror into a given repo root at a time — starting
 a second one for the same root fails with an error; run `graft stop`
