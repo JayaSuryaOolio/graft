@@ -16,40 +16,72 @@ STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/graft"
 STATE_FILE="$STATE_DIR/state.map"
 LOG_DIR="$STATE_DIR/logs"
 
-typeset -gA GRAFT_MAP
+# State: one row per stacked worktree, "root<TAB>worktree<TAB>pid", oldest first.
+# The last row for a root is the active mirror; earlier rows are paused (pid "-").
+typeset -ga GRAFT_ROWS
 
 _graft_load_map() {
-  GRAFT_MAP=()
-  [[ -f "$STATE_FILE" ]] || return 0
-  local root worktree pid
-  while IFS=$'\t' read -r root worktree pid; do
-    [[ -z "$root" ]] && continue
-    GRAFT_MAP[$root]="$worktree|$pid"
-  done < "$STATE_FILE"
+  GRAFT_ROWS=()
+  [[ -f "$STATE_FILE" ]] && GRAFT_ROWS=("${(@f)$(<"$STATE_FILE")}")
+  GRAFT_ROWS=("${(@)GRAFT_ROWS:#}")
 }
 
 _graft_save_map() {
   mkdir -p "$STATE_DIR"
   : > "$STATE_FILE"
-  local root entry worktree pid
-  for root entry in "${(@kv)GRAFT_MAP}"; do
-    worktree="${entry%%|*}"
-    pid="${entry##*|}"
-    printf '%s\t%s\t%s\n' "$root" "$worktree" "$pid" >> "$STATE_FILE"
+  (( ${#GRAFT_ROWS} )) && print -rl -- "${GRAFT_ROWS[@]}" > "$STATE_FILE"
+}
+
+# Prints the last (active) row for $1, or nothing.
+_graft_top() {
+  local row top=""
+  for row in "${GRAFT_ROWS[@]}"; do
+    [[ "${row%%$'\t'*}" == "$1" ]] && top="$row"
   done
+  print -r -- "$top"
+}
+
+# Drops rows for root $1 (only the ones for worktree $2 if given).
+_graft_drop() {
+  local row f kept=()
+  for row in "${GRAFT_ROWS[@]}"; do
+    f=("${(@ps:\t:)row}")
+    [[ "${f[1]}" == "$1" && ( -z "${2:-}" || "${f[2]}" == "$2" ) ]] || kept+=("$row")
+  done
+  GRAFT_ROWS=("${kept[@]}")
 }
 
 _graft_prune_dead() {
-  local changed=0
-  local root entry pid
-  for root entry in "${(@kv)GRAFT_MAP}"; do
-    pid="${entry##*|}"
-    if ! kill -0 "$pid" 2>/dev/null; then
-      unset "GRAFT_MAP[$root]"
-      changed=1
-    fi
+  local row f
+  for row in "${GRAFT_ROWS[@]}"; do
+    f=("${(@ps:\t:)row}")
+    [[ "${f[3]}" == "-" ]] && continue
+    kill -0 "${f[3]}" 2>/dev/null || { _graft_drop "${f[1]}"; _graft_save_map; }
   done
-  (( changed )) && _graft_save_map
+}
+
+# Kills the watcher with pid $1 and its children.
+_graft_kill() {
+  pkill -TERM -P "$1" 2>/dev/null
+  kill -TERM "$1" 2>/dev/null
+  sleep 0.3
+  pkill -KILL -P "$1" 2>/dev/null
+  kill -KILL "$1" 2>/dev/null
+}
+
+# Syncs $1 into $2 and starts its watcher; sets REPLY to the watcher pid.
+_graft_spawn() {
+  local worktree="$1" root="$2"
+  mkdir -p "$LOG_DIR"
+  local logfile="$LOG_DIR/$(basename "$root").log"
+  _graft_sync "$worktree" "$root"
+  (
+    fswatch -o -l 0.5 "$worktree" 2>>"$logfile" | while read -r _; do
+      _graft_sync "$worktree" "$root" 2>>"$logfile"
+    done
+  ) >>"$logfile" 2>&1 &
+  disown
+  REPLY=$!
 }
 
 _graft_resolve() {
@@ -89,36 +121,45 @@ _graft_require() {
 _graft_stop_root() {
   local root="$1"
   _graft_load_map
-  local entry="${GRAFT_MAP[$root]:-}"
-  if [[ -z "$entry" ]]; then
+  local top
+  top=$(_graft_top "$root")
+  if [[ -z "$top" ]]; then
     echo "graft: nothing running for $root" >&2
     return 1
   fi
-  local pid="${entry##*|}"
-  local worktree="${entry%%|*}"
+  local f=("${(@ps:\t:)top}")
+  local worktree="${f[2]}"
+  _graft_kill "${f[3]}"
+  _graft_drop "$root" "$worktree"
 
-  # Kill the watcher's children first (fswatch/rsync), then the watcher itself.
-  pkill -TERM -P "$pid" 2>/dev/null
-  kill -TERM "$pid" 2>/dev/null
-  sleep 0.3
-  pkill -KILL -P "$pid" 2>/dev/null
-  kill -KILL "$pid" 2>/dev/null
+  # Another worktree is stacked underneath: resume mirroring it.
+  local prev
+  prev=$(_graft_top "$root")
+  if [[ -n "$prev" ]]; then
+    local pf=("${(@ps:\t:)prev}")
+    _graft_drop "$root" "${pf[2]}"
+    local pid
+    _graft_spawn "${pf[2]}" "$root"; pid=$REPLY
+    GRAFT_ROWS+=("$root"$'\t'"${pf[2]}"$'\t'"$pid")
+    _graft_save_map
+    echo "graft stopped for $worktree; resumed ${pf[2]}"
+    return 0
+  fi
 
   git -C "$root" checkout -- . 2>/dev/null
   git -C "$root" clean -fd >/dev/null 2>&1
 
-  local stash_marker="graft-stash-for-$worktree"
+  local stash_marker="graft-stash-for-"
   local stash_ref
   stash_ref=$(git -C "$root" stash list --format='%gd %s' | awk -v m="$stash_marker" 'index($0, m) { print $1; exit }')
   if [[ -n "$stash_ref" ]]; then
     if git -C "$root" stash pop "$stash_ref"; then
       echo "graft: restored stashed changes in $root"
     else
-      echo "graft: failed to restore stash '$stash_marker' in $root — resolve manually (git stash list)" >&2
+      echo "graft: failed to restore stash in $root — resolve manually (git stash list)" >&2
     fi
   fi
 
-  unset "GRAFT_MAP[$root]"
   _graft_save_map
   echo "graft stopped for $root"
 }
@@ -148,17 +189,27 @@ cmd_start() {
   _graft_load_map
   _graft_prune_dead
 
-  local existing="${GRAFT_MAP[$root]:-}"
+  local existing
+  existing=$(_graft_top "$root")
   if [[ -n "$existing" ]]; then
-    local existing_worktree="${existing%%|*}"
-    if [[ "$existing_worktree" == "$worktree" ]]; then
+    local ef=("${(@ps:\t:)existing}")
+    if [[ "${ef[2]}" == "$worktree" ]]; then
       echo "graft: already running for $worktree"
       echo "$root"
       return 0
     fi
-    echo "graft: already running for $root from $existing_worktree" >&2
-    echo "  Run 'graft stop $root' first, then start again from here." >&2
-    return 1
+    # Push: pause the current top, then mirror this worktree over it.
+    _graft_kill "${ef[3]}"
+    _graft_drop "$root" "$worktree"
+    _graft_drop "$root" "${ef[2]}"
+    GRAFT_ROWS+=("$root"$'\t'"${ef[2]}"$'\t'"-")
+    local pid
+    _graft_spawn "$worktree" "$root"; pid=$REPLY
+    GRAFT_ROWS+=("$root"$'\t'"$worktree"$'\t'"$pid")
+    _graft_save_map
+    echo "graft running from the worktree $worktree (paused ${ef[2]})"
+    echo "$root"
+    return 0
   fi
 
   if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
@@ -188,20 +239,9 @@ cmd_start() {
     echo "graft: stashed uncommitted changes in $root" >&2
   fi
 
-  mkdir -p "$LOG_DIR"
-  local logfile="$LOG_DIR/$(basename "$root").log"
-
-  _graft_sync "$worktree" "$root"
-
-  (
-    fswatch -o -l 0.5 "$worktree" 2>>"$logfile" | while read -r _; do
-      rsync -a --delete --exclude='.git' --filter=':- .gitignore' "$worktree/" "$root/" 2>>"$logfile"
-    done
-  ) >>"$logfile" 2>&1 &
-  disown
-  local pid=$!
-
-  GRAFT_MAP[$root]="$worktree|$pid"
+  local pid
+  _graft_spawn "$worktree" "$root"; pid=$REPLY
+  GRAFT_ROWS+=("$root"$'\t'"$worktree"$'\t'"$pid")
   _graft_save_map
 
   echo "graft running from the worktree $worktree"
@@ -229,15 +269,18 @@ cmd_stop() {
 cmd_list() {
   _graft_load_map
   _graft_prune_dead
-  if (( ${#GRAFT_MAP} == 0 )); then
+  if (( ${#GRAFT_ROWS} == 0 )); then
     echo "no graft instances running"
     return 0
   fi
-  local root entry worktree pid
-  for root entry in "${(@kv)GRAFT_MAP}"; do
-    worktree="${entry%%|*}"
-    pid="${entry##*|}"
-    printf '%s  <-  %s  (pid %s)\n' "$root" "$worktree" "$pid"
+  local row f
+  for row in "${GRAFT_ROWS[@]}"; do
+    f=("${(@ps:\t:)row}")
+    if [[ "${f[3]}" == "-" ]]; then
+      printf '%s  <-  %s  (paused)\n' "${f[1]}" "${f[2]}"
+    else
+      printf '%s  <-  %s  (pid %s)\n' "${f[1]}" "${f[2]}" "${f[3]}"
+    fi
   done
 }
 
@@ -251,8 +294,9 @@ Usage:
                              --stash-root-changes: stash uncommitted root changes
                              without prompting (needed when not on a terminal);
                              'stop' restores them
-  graft stop [root]      Stop mirroring (defaults to the current repo)
-  graft list             List all running graft instances
+  graft stop [root]      Stop the active mirror and resume the previous
+                         worktree, if any (defaults to the current repo)
+  graft list             List all graft instances (paused ones are stacked)
 EOF
 }
 
